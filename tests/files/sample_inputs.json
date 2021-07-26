@@ -1,0 +1,8 @@
+{
+  "path": "tests/files",
+  "tickers": [
+    "MMM",
+    "ABT",
+    "ABBV"
+  ]
+}
