@@ -10,6 +10,7 @@ import cgi
 import shutil
 import datetime
 import ntpath
+import numpy as np
 
 
 def get_instrument_data_from_path(path_to_files):
@@ -43,23 +44,49 @@ def transform_instrument_data(input_data, event="div"):
         input_data['Period'] = input_data.apply(lambda row: '-'.join([row['Month_name'][:3], str(row['Year'])]), axis=1)
         input_data['Quarter'] = input_data.Date.dt.quarter
         input_data['Week'] = input_data.Date.dt.isocalendar().week
-        """
-        input_data['Dividend_calendar'] = input_data.apply(
-            lambda row: input_data[
-                (input_data['Ticker'] == row['Ticker']) &
-                (input_data['Year'].isin(range(input_data.Year.max() - 2, input_data.Year.max())))
-            ].groupby(['Ticker', 'Month_name'])['Month_name'].count().nlargest(12).unstack().columns.values, axis=1)
-        input_data['Payment_frequency'] = input_data.apply(lambda row: np.count_nonzero(row['Dividend_calendar']), axis=1)
-        """
-        #input_data['Dividend_calendar'] = input_data.apply(lambda row: ", ".join(row['Dividend_calendar'].value))
         input_data['Id'] = input_data.apply(lambda row: '-'.join([row['Ticker'], row['Period']]), axis=1)
         input_data = input_data.set_index('Id')
         input_data = input_data.sort_values(['Ticker', 'Date'], ascending=(True, False))
-        #x['Dividend_calendar'] = x.apply(lambda row: ", ".join(x[(x['Ticker'] == row['Ticker']) & (x['Year'].isin(range(x.Year.max() - 2, x.Year.max())))].groupby(['Ticker','Month_name'])['Month_name'].count().nlargest(12).unstack().columns.values), axis=1)
-        # x['test'] = x.apply(lambda row: x[x['Ticker'] == row['Ticker']].groupby(['Ticker','Month_name'])['Month_name'].count().nlargest(4).unstack().columns.values, axis=1)
-        #b = input_data.groupby(['Ticker','Month_name'])['Month_name'].count()
-        #b.nlargest(4).unstack().columns
     return input_data
+
+
+def create_dividend_calendar(input_data, time_window=5, n_largest=24):
+    """
+
+    :param n_largest:
+    :param input_data: dataframe
+    :param time_window: in years
+    :return:
+    """
+    def filter_by_ticker_and_time(data, row, time_range):
+        return data[(data['Ticker'] == row['Ticker']) & (data['Year'].isin(time_range))]
+
+    def format_column_by(column):
+        return lambda row: ', '.join([str(x) for x in row[column]])
+
+    data_range = range(input_data['Year'].max() - time_window, input_data['Year'].max())
+    group_levels = ['Month', 'Month_name']
+    for level in group_levels:
+        input_data[f'ex_div_dates_{level}'] = input_data.apply(
+            lambda x:
+            filter_by_ticker_and_time(input_data, x, data_range)
+                .groupby(['Ticker', level])[level].count().nlargest(n_largest).unstack().columns.values,
+            axis=1)
+        input_data[f'ex_div_dates_{level}'] = input_data[f'ex_div_dates_{level}'].apply(np.sort)
+
+    input_data['dividend_freq'] = input_data.apply(
+        lambda x:
+        filter_by_ticker_and_time(input_data, x, data_range)['Month'].count() / len(data_range),
+        axis=1)
+    slicer = input_data['ex_div_dates_Month'].apply(np.count_nonzero, axis=0) != input_data['dividend_freq']
+    input_data['dividend_freq'][slicer] = input_data[slicer]['ex_div_dates_Month'].apply(np.count_nonzero, axis=0)
+    for level in group_levels:
+        input_data[f'dividend_calendar_{level}'] = input_data.apply(format_column_by(f'ex_div_dates_{level}'), axis=1)
+
+    columns = ['Ticker', 'dividend_freq', 'dividend_calendar_Month', 'dividend_calendar_Month_name']
+    dividend_calendar = input_data[columns].drop_duplicates().set_index('Ticker')
+
+    return dividend_calendar
 
 
 def save_to_path(dataframe, destination_path, filename=None, event="div"):

@@ -2,12 +2,12 @@ import json
 import os.path
 
 from fyngest.helpers import download_instrument_data, get_instrument_data_from_path, transform_instrument_data
-from fyngest.helpers import set_directory_tree, save_to_path
+from fyngest.helpers import set_directory_tree, save_to_path, create_dividend_calendar
 from pathlib import Path
 
-path = Path(__file__).parent.parent
+_path = Path(__file__).parent.parent
 
-path = os.path.join(path, 'inputs.json')
+path = os.path.join(_path, 'inputs.json')
 
 with open(path, ) as f:
     inputs = json.load(f)
@@ -19,9 +19,7 @@ with open(path, ) as f:
         instrument_data = get_instrument_data_from_path(_data_path)
         instrument_data = transform_instrument_data(instrument_data, event=instrument)
         save_to_path(instrument_data, output_path, event=instrument)
-
-
-
-
-
+        if instrument == 'div':
+            instrument_data = create_dividend_calendar(instrument_data)
+            save_to_path(instrument_data, output_path, event='dividend_calendar')
 
