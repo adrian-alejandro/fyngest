@@ -11,6 +11,7 @@ import shutil
 import datetime
 import ntpath
 import numpy as np
+import math
 
 
 def get_instrument_data_from_path(path_to_files):
@@ -45,8 +46,8 @@ def transform_instrument_data(input_data, event="div"):
         input_data['Quarter'] = input_data.Date.dt.quarter
         input_data['Week'] = input_data.Date.dt.isocalendar().week
         input_data['Id'] = input_data.apply(lambda row: '-'.join([row['Ticker'], row['Period']]), axis=1)
-        input_data = input_data.set_index('Id')
-        input_data = input_data.sort_values(['Ticker', 'Date'], ascending=(True, False))
+        input_data.set_index('Id', inplace=True)
+        input_data.sort_values(['Ticker', 'Date'], ascending=(True, False), inplace=True)
     return input_data
 
 
@@ -58,8 +59,9 @@ def create_dividend_calendar(input_data, time_window=5, n_largest=24):
     :param time_window: in years
     :return:
     """
-    def filter_by_ticker_and_time(data, row, time_range):
-        return data[(data['Ticker'] == row['Ticker']) & (data['Year'].isin(time_range))]
+    def filter_by_ticker_and_time(data, row, time_range=None):
+        _time_range = (data['Year'].isin(time_range)) if time_range else (data['Year'] == row['Year'])
+        return data[(data['Ticker'] == row['Ticker']) & _time_range]
 
     def format_column_by(column):
         return lambda row: ', '.join([str(x) for x in row[column]])
@@ -69,8 +71,9 @@ def create_dividend_calendar(input_data, time_window=5, n_largest=24):
     for level in group_levels:
         input_data[f'ex_div_dates_{level}'] = input_data.apply(
             lambda x:
-            filter_by_ticker_and_time(input_data, x, data_range)
-                .groupby(['Ticker', level])[level].count().nlargest(n_largest).unstack().columns.values,
+            filter_by_ticker_and_time(
+                input_data, x, data_range
+            ).groupby(['Ticker', level])[level].count().nlargest(n_largest).unstack().columns.values,
             axis=1)
         input_data[f'ex_div_dates_{level}'] = input_data[f'ex_div_dates_{level}'].apply(np.sort)
 
@@ -87,6 +90,79 @@ def create_dividend_calendar(input_data, time_window=5, n_largest=24):
     dividend_calendar = input_data[columns].drop_duplicates().set_index('Ticker')
 
     return dividend_calendar
+
+
+def forecast_dividend_dates(input_data, dividend_calendar, target=None):
+    """
+
+    :param dividend_calendar:
+    :param input_data: dataframe
+    :param target: target year, i.e. forecast until target year (included)
+    :return:
+    """
+    def filter_by_ticker_and_time(data, row, time_range=None):
+        _time_range = (data['Year'].isin(time_range)) if time_range else (data['Year'] == row['Year'])
+        return data[(data['Ticker'] == row['Ticker']) & _time_range]
+
+    def create_forecasted_records(records_dict,  installments):
+        _new_records = []
+        __row = records_dict.copy()
+        __row['Date'] = pd.to_datetime(__row['Date'])
+        __row['Entry_type'] = 'Forecast'
+        for installment in installments:
+            _row = __row.copy()
+            step = installment * row['installment_step_weeks']
+            _row['Date'] = _row['Date'] + pd.DateOffset(weeks=step)
+            _row['Week'] = _row['Date'].week
+            _row['Month'] = _row['Date'].month
+            _row['Month_name'] = _row['Date'].month_name()
+            _row['Quarter'] = _row['Date'].quarter
+            _row['Year'] = _row['Date'].year
+            _row['Period'] = '-'.join([_row['Month_name'][:3], str(_row['Year'])])
+            _row['Id'] = '-'.join([_row['Ticker'], _row['Period']])
+            _new_records.append(_row)
+        return _new_records
+
+    input_data['installments_to_date'] = input_data.apply(
+        lambda x:
+        filter_by_ticker_and_time(input_data, x)['Period'].nunique(),
+        axis=1)
+    input_data['pending_installments'] = input_data['dividend_freq'] - input_data['installments_to_date']
+    input_data['installment_step'] = 12 / input_data['dividend_freq']
+    input_data['installment_step_weeks'] = 52 / input_data['dividend_freq']
+
+    slicer = input_data['pending_installments'] > 0
+    aux_pending = input_data[slicer]
+    aux_pending['last_installment'] = aux_pending.apply(
+        lambda x:
+        filter_by_ticker_and_time(aux_pending, x)['Date'].max(),
+        axis=1)
+
+    max_year = aux_pending['Year'].max()
+
+    max_year_slicer = aux_pending['Year'] == max_year
+
+    time_range = range(max_year, target + 1) if target else [max_year]
+    aux_pending = aux_pending[max_year_slicer].sort_values(['Ticker', 'Date'])
+    aux_pending = aux_pending.drop_duplicates(subset=['Ticker', 'Year', 'last_installment'], keep="last")
+
+    new_records = []
+    for year in time_range:
+        pending_dict = aux_pending.to_dict('records')
+        for row in pending_dict:
+            pending = row['pending_installments'] if year == max_year \
+                else dividend_calendar.loc[row['Ticker']]['dividend_freq']
+            pending_installments = range(1, int(pending) + 1)
+            records = create_forecasted_records(row, pending_installments)
+            new_records.extend(records)
+        aux_pending = pd.DataFrame(new_records).set_index('Id', inplace=True)
+
+    aux_installments = pd.DataFrame(new_records)
+    aux_installments.set_index('Id', inplace=True)
+    aux_installments.to_csv(r"check_forecast.csv")
+    input_data = pd.concat([input_data, aux_installments]).sort_values(['Ticker', 'Date'], ascending=[True, False])
+
+    return input_data
 
 
 def save_to_path(dataframe, destination_path, filename=None, event="div"):
